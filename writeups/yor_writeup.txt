@@ -1,0 +1,152 @@
+Title: Unraveling the argIAM CTF Maze: A Journey from Logs to Flags
+
+In the captivating world of Capture The Flag (CTF) challenges, every step taken is a potential discovery, and every log holds a clue waiting to be deciphered.
+This is the tale of Yor Forgor, the "hacker", orchestrating a collaborative effort with Akioukun, the "insider", to navigate through the labyrinth of a CTF. 
+Together, they worked in tandem, piecing together fragments of information to unveil the coveted flag.
+
+1.1 - Infiltration and Extraction:
+Upon gaining access, the journey began by delving into the inner workings of the system. Navigating through the /insider/ops/monitoring directory proved to be a goldmine.
+Exporting email logs and meticulously filtering out the noise, the insider collected valuable data and shared it with the mysterious "hacker".
+
+1.2 - Endpoints landscape or how you shouldn't expose links in JS
+Since the CTF is done with JS, one can bypass the bruteforce step (well, it can get you to /docs or /admin)
+Entering /hacker and pressing F12 opens us a wonderful world of minified JS, combined with frontend framework stuff
+By checking _app/immutable/entry/app.95ad69e7.js (Note for Meme: no _isntpartofthechallenge here) we can clearly see a list of relevant endpoints, 
+like /hacker/docs (with funny .docx file) and wonderful /hacker/admin/Enterprise_Applications/xeon, which will give us access to infamous XeonDB, asking us for login and password...
+
+1.3 - VPN equals access!
+But before we dive into exposed endpoints, we meet with "Unauthorized IP" error, meaning that the site has some form of IP ACL or using some kind of VPN/nginx reverse proxy.
+When dealing with VPNs, we always see 10.x.x.x subnets for VPN networks.
+Also, if someone tried to use Cloudflare or nginx reverse proxy on own site, you should know about X-Forwarded-For header.
+For reference: https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#x-forwarded-for
+Let's combine that knowledge into something useful! You can either manually insert this header with 10.x.x.x IP into Burp Proxy or write a small Fiddler script:
+
+// SCRIPT BEGIN
+import System;
+import Fiddler;
+
+class Handlers
+{
+    static function OnBeforeRequest(oS: Session) {
+        
+        if (oS.host.StartsWith("olivia.memetrolls.net") && oS.uriContains("/hacker/"))
+            oS.RequestHeaders.Add("X-Forwarded-For", "10.0.0.1");
+        return;
+    }
+}
+// SCRIPT END
+
+That helps us to access all relevant /hacker/* endpoints. Now that we've obtained the .docx file from /hacker/docs, we can go to the next step!
+
+2.1 - The Mysterious "argIAM Operational Handbook.docx"
+The exploration led to the discovery of a fascinating document, the "argIAM Operational Handbook.docx".
+Intriguingly, it hinted at the existence of an argIAMCredentialHelper and provided a glimpse into the path format for downloading apps.
+The puzzle-solving journey continued with a brute force attempt to uncover the version, a step that unveiled unexpected surprises.
+
+2.2 - Brute gato force
+Say hi to Burp Intruder! It can bruteforce through everything, be it folders, user/password sets or other funny patterns!
+Fun fact: it supports processing of payloads, so you also can try to bruteforce the passwords on XeonDB, using md5(md5(md5(password)) + "salt") hashing,
+discovered in another JS file, more on that later.
+
+In this example, we can set positions with a paragraph sign and set rules for bruteforcing
+Or, if you're crazy, you can abuse curl wildcard mechanisms and do stuff like:
+curl /insider/ops/dl/argIAMCredentialHelper/v[0-9].zip
+curl /insider/ops/dl/argIAMCredentialHelper/v[0-9].[0-9].zip
+curl /insider/ops/dl/argIAMCredentialHelper/v[0-9].[0-9].[0-9].zip
+curl /insider/ops/dl/argIAMCredentialHelper/v[0-9].[0-9].[0-9].[0-9].zip... and so on.
+Eventually we find 2 valid versions: 1.0.0.0 and 1.0.1.1.
+
+3.1 - The Unusual Gato Image and Version 1.0.1.1 of argIAMCredentialHelper:
+As the version format revealed itself as x.x.x.x, the process accelerated. Upon downloading version 1.0.0.0, an unexpected and amusing Gato image surfaced.
+Akioukun couldn't help but marvel at the quirky discovery. The journey pressed on, reaching version 1.0.1.1, where the intriguingly named argIAMCredentialHelper application emerged.
+This DotNet application held the key to concealed secrets that would propel the insider closer to the elusive flag.
+
+3.2 - Don't use easy passwords, kids
+With information from "argIAM Operational Handbook.docx", we know that v1.0.1.1.zip's password is the year the foundation was founded.
+So, you can either bruteforce the year manually for 100s of attempts, or use our lovely friend hashcat!
+There are tools and sites to get the password hash from .zip file. For example, zip2john (John-the-Ripper tool format).
+Giving easy bruteforce mask of ?d?d?d?d, we can successfully bruteforce the password, which is 2012 (hey, what a young company!).
+
+3.3 - Bee or not to bee
+Opening dnSpy to inspect the .dll from v1.0.1.1.zip, we notice some forms of obfuscation, including infamous Beebyte, which won't matter because the actual logic behind the checks is kind of easy.
+So, let's check the decompiled code of relevant checks:
+
+// CODE BEGIN
+...
+int[] array = new int[5];
+string text2 = "Validate to avoid ratelimit";
+try {
+    if ((double)text.Select((char BJIKDDKADBAIG) => int.Parse(BJIKDDKADBAIG.ToString())).ToArray<int>()
+        .Aggregate((int EGECDIIBHALDC, int CFBLHDMGMJHDF) => EGECDIIBHALDC * CFBLHDMGMJHDF) == Math.Pow((double)array.Length, (double)array.Length))
+				{
+					text2.Normalize();
+...
+// CODE END
+
+Here we see, that the result should match to 5^5. The input from manager PIN textbox is divided into digits, which are multiplied together.
+So, it's obvious that the shortest correct PIN is 55555. Given the multiplication, you can add as many 1's into the PIN as you want as there are no PIN length checks,
+however we may see one on the password reset endpoint, which could be found just by putting a breakpoint right before WebRequest call:
+/insider/iamcredhelper/reset?u=<username>&y=<OTP code>&m=<manager PIN>
+
+3.4 - Tons of logs...
+Delving into the insider monitoring logs, available at /insider/ops/monitoring, Akioukun uncovered a trove of emails that hinted at hidden pathways within the challenge.
+```
+xiaoyan.jin@arg.iam
+ni.huang@arg.iam
+zhanli.yang@arg.iam
+qiulin.feng@arg.iam
+da.wei@arg.iam
+weijie.fan@arg.iam
+jianxin.sun@arg.iam
+monitor@arg.iam
+xudong.zhong@arg.iam
+li.chen02@arg.iam
+jinbo.huang@arg.iam
+tianhui.ma@arg.iam
+```
+These electronic threads, carefully extracted and analyzed, were shared with Yor Forgor, providing valuable insights into the structure and complexity of the system.
+Moreover, Akioukun stumbled upon a noteworthy discovery — a hash linked to the 'monitor@arg.iam' account (34addeb4f1a6b3201fccbf9cbac5ff4e).
+Recognizing its potential significance, Akioukun also passed this vital piece of information to Yor, marking a pivotal step forward in their joint effort to unlock the secrets concealed within the CTF labyrinth.
+
+4.1 - Knock-knock, XeonDB or what's the OTP code
+Since we still have to find OTP code, let's dive into XeonDB, which may have one.
+By checking JS code and sending login requests, we can see that the password is hashed: md5(md5(md5(password)) + "salt").
+From monitoring logs, we already know the value of hash for monitor@arg.iam service account. Welcome to the world of pass-the-hash attacks! (They are usually used in the Windows Server world)
+With the account access, we see the user table with qiulin.feng@arg.iam sitting alone there... Let's play with the only available requests: GET and POST /api/ea_xeondb/entries.
+GET doesn't disclose OTP code, but what about POST one? Let's sniff the edit request
+
+// REQ
+{"id":"0","status":"LOL","method":"INSERT"}
+// RSP
+{"id":0,"otp":"ccccccrrktriubgvcuvubhdtibdughigtrkuirdvfrrc","user":"qiulin.feng@arg.iam","timestamp":0,"sn":0,"status":"LOL"}
+
+Oh, here's the OTP code for the tool! Also it doesn't change, which is really bad for actual physical key.
+
+4.2 - IT'S THE FINAL COUNTDOWN
+Unlocking the manager code, which turned out to be 55555, and uncovering the URL for password resets using OTP, marked a crucial breakthrough.
+With the insider taking charge and resetting a user's password, the path to the flag shortened considerably.
+
+One of the discovered endpoints was /insider/ops/bandera, which seems to be the final boss by how it looks.
+While insider creds doesn't have privileges for it, our good friend Qiulin Feng does. So, let's reset his password using that link from credential helper tool.
+The journey reached its climax as the insider navigated to the bandera, utilizing the acquired credentials.
+A strategic click on "export to XeonDB" triggered the transmission of the coveted flag to XeonDB.
+The finish line was in sight, but an ingenious shortcut emerged.
+
+4.3 - Direct Token Extraction:
+In a stroke of brilliance, the insider seized the opportunity to extract the token directly from the Payload Body Request, bypassing the need for the hacker's involvement.
+This shortcut proved to be a swifter and more efficient route to claiming the flag.
+Though since it is sent to XeonDB anyway, hacker can use previous steps to acquire OTP of suddenly appeared user bandera@arg.iam.
+
+EPILOGUE
+The CTF journey, from logs to flags, is an intricate dance of skill, intuition, and perseverance.
+The insider's perspective sheds light on the twists and turns encountered, showcasing the thrill of solving each puzzle and ultimately triumphing in the face of a challenging CTF scenario.
+
+
+
+CREDITS:
+Akio - insider
+Yor Forgor - hacker
+memetrollsXD - CTF creator
+xeon - XeonDB inspiration xD
+
+(c) 2024
